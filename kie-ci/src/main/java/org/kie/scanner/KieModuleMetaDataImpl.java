@@ -1,14 +1,5 @@
 package org.kie.scanner;
 
-import org.drools.core.common.ProjectClassLoader;
-import org.drools.core.rule.KieModuleMetaInfo;
-import org.drools.compiler.kproject.ReleaseIdImpl;
-import org.drools.compiler.kproject.models.KieModuleModelImpl;
-import org.drools.core.rule.TypeMetaInfo;
-import org.kie.api.builder.ReleaseId;
-import org.drools.compiler.kie.builder.impl.InternalKieModule;
-import org.eclipse.aether.artifact.Artifact;
-
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
@@ -27,9 +18,18 @@ import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
-import static org.drools.core.util.ClassUtils.convertResourceToClassName;
-import static org.drools.core.util.IoUtils.readBytesFromZipEntry;
-import static org.kie.scanner.ArtifactResolver.getResolverFor;
+import org.drools.compiler.kie.builder.impl.InternalKieModule;
+import org.drools.compiler.kproject.ReleaseIdImpl;
+import org.drools.compiler.kproject.models.KieModuleModelImpl;
+import org.drools.core.common.ProjectClassLoader;
+import org.drools.core.rule.KieModuleMetaInfo;
+import org.drools.core.rule.TypeMetaInfo;
+import org.eclipse.aether.artifact.Artifact;
+import org.kie.api.builder.ReleaseId;
+
+import static org.drools.core.util.ClassUtils.*;
+import static org.drools.core.util.IoUtils.*;
+import static org.kie.scanner.ArtifactResolver.*;
 
 public class KieModuleMetaDataImpl implements KieModuleMetaData {
 
@@ -63,9 +63,19 @@ public class KieModuleMetaDataImpl implements KieModuleMetaData {
     }
 
     public KieModuleMetaDataImpl(InternalKieModule kieModule) {
-        String pomXmlPath = ((ReleaseIdImpl)kieModule.getReleaseId()).getPomXmlPath();
-        InputStream pomStream = new ByteArrayInputStream(kieModule.getBytes(pomXmlPath));
-        this.artifactResolver = getResolverFor(pomStream);
+
+        if ( kieModule.getPomModel() != null) {
+            //If pomModel exists, then use it
+            this.artifactResolver = getResolverFor( kieModule.getPomModel() );
+        } else {
+            //if not, give a second chance to be calculated.
+            //current code always getResolverFor(pomStream), causing the pom to be parsed again
+            // with the subsequent transitive dependencies calculation
+            String pomXmlPath = ((ReleaseIdImpl)kieModule.getReleaseId()).getPomXmlPath();
+            InputStream pomStream = new ByteArrayInputStream(kieModule.getBytes(pomXmlPath));
+            this.artifactResolver = getResolverFor(pomStream);
+        }
+
         this.kieModule = kieModule;
         for (String file : kieModule.getFileNames()) {
             if (!indexClass(file)) {
@@ -133,8 +143,20 @@ public class KieModuleMetaDataImpl implements KieModuleMetaData {
         if (releaseId != null) {
             addArtifact(artifactResolver.resolveArtifact(releaseId));
         }
-        for (DependencyDescriptor dep : artifactResolver.getAllDependecies()) {
-            addArtifact(artifactResolver.resolveArtifact(dep.getReleaseId()));
+        if ( kieModule != null &&
+                kieModule.getPomModel() != null &&
+                kieModule.getPomModel().getDependencies() != null ) {
+            //if pom model exists then use the already calculated dependencies.
+            for ( ReleaseId releaseId : kieModule.getPomModel().getDependencies() ) {
+                addArtifact( artifactResolver.resolveArtifact( releaseId ) );
+            }
+        } else {
+            //if not, give a second chance.
+            //this invocation to current artifactResolver implementation causes the transitive dependencies
+            //to be calculated again.
+            for ( DependencyDescriptor dep : artifactResolver.getAllDependecies() ) {
+                addArtifact( artifactResolver.resolveArtifact( dep.getReleaseId() ) );
+            }
         }
         packages.addAll(classes.keySet());
         packages.addAll(rulesByPackage.keySet());
